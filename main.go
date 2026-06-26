@@ -13,12 +13,14 @@ func main() {
 	// Load .env in local dev (no-op in Railway)
 	_ = godotenv.Load()
 
-	// Warn (don't crash) if unconfigured: the server still binds so the
-	// platform healthcheck passes and the misconfiguration is visible in
-	// logs instead of a cryptic restart loop. Unipile calls will fail until set.
+	// Base URL comes from the env var; fall back to the documented default so
+	// the service boots and passes its healthcheck even if the var is unset.
+	// Override UNIPILE_BASE_URL if your Unipile account is on a different DSN.
+	const defaultBaseURL = "https://api6.unipile.com:13614"
 	baseURL := os.Getenv("UNIPILE_BASE_URL")
 	if baseURL == "" {
-		log.Println("⚠️  UNIPILE_BASE_URL is not set (e.g. https://api6.unipile.com:13614); Unipile requests will fail until configured")
+		baseURL = defaultBaseURL
+		log.Printf("⚠️  UNIPILE_BASE_URL not set; using default %s — override it if your account uses a different DSN", baseURL)
 	}
 
 	port := os.Getenv("PORT")
