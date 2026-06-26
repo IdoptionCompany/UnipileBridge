@@ -146,6 +146,17 @@ log.Printf("session %s connected (email=%q key=%s…)", sessionID, email, apiKey
 `extractBearer`, `HandleMessages`, `handleRequest`, and the JSON-RPC router are
 unchanged.
 
+Two changes here are intentional and must not be read as regressions:
+
+- The old `missing Authorization → 401` guard (today's `server.go:48–51`) is
+  **removed**. In legacy mode a caller with no Bearer is allowed to fall
+  through to `Resolve`, which decides via shared key / bearer-as-key / reject.
+  Auth is now enforced only when `BRIDGE_AUTH_TOKEN` is set.
+- The package doc comment (`server.go:1–4`) currently says the Unipile client is
+  "bound to the bearer token … this is the per-user routing trick." That is no
+  longer true — update it to describe email→key routing, with the Bearer as the
+  bridge auth token.
+
 ### Changed: `main.go`
 
 ```go
