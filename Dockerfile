@@ -5,13 +5,14 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
+# Disable checksum DB and allow go.sum to be updated at build time
+ENV GONOSUMDB=*
+ENV GOFLAGS=-mod=mod
+
 COPY . .
 
-# GONOSUMDB=* skips checksum DB (avoids network issues in Railway build env)
-# -mod=mod allows go to write go.sum entries on the fly during build
-RUN go env -w GONOSUMDB="*" GONOSUMCHECK="*" && \
-    go mod download && \
-    CGO_ENABLED=0 GOOS=linux go build -mod=mod -ldflags="-s -w" -o /unipile-bridge .
+RUN go mod download && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /unipile-bridge .
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.19
