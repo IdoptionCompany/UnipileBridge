@@ -154,6 +154,62 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// ─── Streamable HTTP endpoint (POST /sse) ────────────────────────────────────
+// Newer MCP clients (Dust's "Streamable HTTP" transport) POST a JSON-RPC
+// request directly to /sse and read the single response back inline — either as
+// a one-shot SSE event or as plain JSON, depending on the Accept header.
+
+func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
+	bearer := extractBearer(r)
+	legacy := s.authToken == ""
+
+	if !legacy && bearer != s.authToken {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	userEmail := r.URL.Query().Get("dust_user_email")
+	if userEmail == "" {
+		userEmail = r.Header.Get("X-Dust-User-Email")
+	}
+
+	apiKey, err := s.credentials.Resolve(userEmail, bearer, legacy)
+	if err != nil {
+		http.Error(w, `{"error":"no Unipile credential"}`, http.StatusForbidden)
+		return
+	}
+
+	var req mcp.Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	sess := &session{
+		ch:     make(chan mcp.Response, 1),
+		client: unipile.NewClient(s.baseURL, apiKey),
+	}
+
+	resp := s.handleRequest(sess, req)
+
+	// If client accepts SSE, respond as SSE stream; otherwise plain JSON
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "text/event-stream") {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		b, _ := json.Marshal(resp)
+		fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(b))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
 // ─── JSON-RPC router ─────────────────────────────────────────────────────────
 
 func (s *Server) handleRequest(sess *session, req mcp.Request) mcp.Response {

@@ -40,8 +40,22 @@ func main() {
 	mux := http.NewServeMux()
 	srv := bridge.NewServer(baseURL, creds, authToken)
 
-	// MCP over SSE — one endpoint for connection, one for messages
-	mux.HandleFunc("/sse", srv.HandleSSE)
+	// MCP /sse: GET = legacy SSE transport, POST = Streamable HTTP transport
+	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			srv.HandleSSE(w, r)
+		case http.MethodPost:
+			srv.HandleStreamableHTTP(w, r)
+		case http.MethodOptions:
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 	mux.HandleFunc("/messages", srv.HandleMessages)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
