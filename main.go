@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/idoption/unipile-bridge/internal/bridge"
+	"github.com/idoption/unipileBridge/internal/bridge"
 )
 
 func main() {

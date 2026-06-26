@@ -1,4 +1,4 @@
-module github.com/idoption/unipile-bridge
+module github.com/idoption/unipileBridge
 
 go 1.22
 
