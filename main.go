@@ -13,9 +13,12 @@ func main() {
 	// Load .env in local dev (no-op in Railway)
 	_ = godotenv.Load()
 
+	// Warn (don't crash) if unconfigured: the server still binds so the
+	// platform healthcheck passes and the misconfiguration is visible in
+	// logs instead of a cryptic restart loop. Unipile calls will fail until set.
 	baseURL := os.Getenv("UNIPILE_BASE_URL")
 	if baseURL == "" {
-		log.Fatal("UNIPILE_BASE_URL env var is required (e.g. https://api6.unipile.com:13614)")
+		log.Println("⚠️  UNIPILE_BASE_URL is not set (e.g. https://api6.unipile.com:13614); Unipile requests will fail until configured")
 	}
 
 	port := os.Getenv("PORT")
