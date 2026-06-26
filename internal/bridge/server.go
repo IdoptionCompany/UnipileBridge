@@ -12,8 +12,8 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/idoption/unipile-bridge/internal/mcp"
-	"github.com/idoption/unipile-bridge/internal/unipile"
+	"github.com/idoption/unipileBridge/internal/mcp"
+	"github.com/idoption/unipileBridge/internal/unipile"
 )
 
 // session holds the SSE channel for one connected client.
@@ -24,15 +24,19 @@ type session struct {
 
 // Server is the MCP bridge server.
 type Server struct {
-	baseURL  string
-	mu       sync.RWMutex
-	sessions map[string]*session
+	baseURL     string
+	credentials *Store
+	authToken   string // BRIDGE_AUTH_TOKEN; "" => legacy mode (auth disabled)
+	mu          sync.RWMutex
+	sessions    map[string]*session
 }
 
-func NewServer(baseURL string) *Server {
+func NewServer(baseURL string, creds *Store, authToken string) *Server {
 	return &Server{
-		baseURL:  baseURL,
-		sessions: make(map[string]*session),
+		baseURL:     baseURL,
+		credentials: creds,
+		authToken:   authToken,
+		sessions:    make(map[string]*session),
 	}
 }
 
@@ -44,9 +48,24 @@ func NewServer(baseURL string) *Server {
 //  4. Keep the connection alive and stream JSON-RPC responses
 
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
-	apiKey := extractBearer(r)
-	if apiKey == "" {
-		http.Error(w, `{"error":"missing Authorization header"}`, http.StatusUnauthorized)
+	bearer := extractBearer(r)
+	legacy := s.authToken == ""
+
+	// Bridge auth
+	if !legacy && bearer != s.authToken {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Resolve Unipile API key
+	userEmail := r.URL.Query().Get("dust_user_email")
+	if userEmail == "" {
+		userEmail = r.Header.Get("X-Dust-User-Email")
+	}
+	apiKey, err := s.credentials.Resolve(userEmail, bearer, legacy)
+	if err != nil {
+		log.Printf("credential lookup failed for %q: %v", userEmail, err)
+		http.Error(w, `{"error":"no Unipile credential for user"}`, http.StatusForbidden)
 		return
 	}
 

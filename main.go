@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/idoption/unipile-bridge/internal/bridge"
+	"github.com/idoption/unipileBridge/internal/bridge"
 )
 
 func main() {
@@ -28,8 +28,17 @@ func main() {
 		port = "3000"
 	}
 
+	authToken := os.Getenv("BRIDGE_AUTH_TOKEN")
+	if authToken == "" {
+		log.Println("⚠️  WARNING: BRIDGE_AUTH_TOKEN not set — auth DISABLED (legacy mode)")
+	}
+
+	userMap := os.Getenv("USER_MAP")
+	sharedKey := os.Getenv("UNIPILE_SHARED_KEY")
+	creds := bridge.NewStore(userMap, sharedKey)
+
 	mux := http.NewServeMux()
-	srv := bridge.NewServer(baseURL)
+	srv := bridge.NewServer(baseURL, creds, authToken)
 
 	// MCP over SSE — one endpoint for connection, one for messages
 	mux.HandleFunc("/sse", srv.HandleSSE)

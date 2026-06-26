@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/idoption/unipile-bridge/internal/mcp"
-	"github.com/idoption/unipile-bridge/internal/unipile"
+	"github.com/idoption/unipileBridge/internal/mcp"
+	"github.com/idoption/unipileBridge/internal/unipile"
 )
 
 // toolCatalog returns all MCP tool definitions exposed by the bridge.
