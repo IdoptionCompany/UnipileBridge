@@ -5,14 +5,12 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Download deps first so this layer is cached unless go.mod/go.sum change.
-# go.sum* glob lets the build work before go.sum is committed.
-COPY go.mod go.sum* ./
-RUN go mod download
-
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /unipile-bridge .
+# Resolve imports and write go.sum at build time (no committed go.sum yet).
+# Once go.sum is committed, this can be reverted to a cached `go mod download`.
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /unipile-bridge .
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.19
