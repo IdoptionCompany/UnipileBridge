@@ -1,0 +1,190 @@
+// Package bridge implements the MCP-over-SSE server that proxies Unipile.
+// Each SSE connection gets its own Unipile client bound to the bearer token
+// extracted from the Authorization header — this is the per-user routing trick.
+package bridge
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+
+	"github.com/google/uuid"
+	"github.com/idoption/unipile-bridge/internal/mcp"
+	"github.com/idoption/unipile-bridge/internal/unipile"
+)
+
+// session holds the SSE channel for one connected client.
+type session struct {
+	ch     chan mcp.Response
+	client *unipile.Client
+}
+
+// Server is the MCP bridge server.
+type Server struct {
+	baseURL  string
+	mu       sync.RWMutex
+	sessions map[string]*session
+}
+
+func NewServer(baseURL string) *Server {
+	return &Server{
+		baseURL:  baseURL,
+		sessions: make(map[string]*session),
+	}
+}
+
+// ─── SSE endpoint (/sse) ─────────────────────────────────────────────────────
+// Dust connects here first. We:
+//  1. Extract the bearer token (= user's Unipile API key)
+//  2. Mint a session ID
+//  3. Send the MCP `endpoint` event pointing to /messages?sessionId=xxx
+//  4. Keep the connection alive and stream JSON-RPC responses
+
+func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	apiKey := extractBearer(r)
+	if apiKey == "" {
+		http.Error(w, `{"error":"missing Authorization header"}`, http.StatusUnauthorized)
+		return
+	}
+
+	sessionID := uuid.NewString()
+	ch := make(chan mcp.Response, 32)
+
+	s.mu.Lock()
+	s.sessions[sessionID] = &session{
+		ch:     ch,
+		client: unipile.NewClient(s.baseURL, apiKey),
+	}
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.sessions, sessionID)
+		s.mu.Unlock()
+		log.Printf("session %s closed", sessionID)
+	}()
+
+	// SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Tell the MCP client where to POST requests
+	messagesURL := fmt.Sprintf("/messages?sessionId=%s", sessionID)
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", messagesURL)
+	flusher.Flush()
+
+	log.Printf("session %s connected (key: %s…)", sessionID, apiKey[:min(8, len(apiKey))])
+
+	// Stream responses until client disconnects
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case resp := <-ch:
+			b, err := json.Marshal(resp)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(b))
+			flusher.Flush()
+		}
+	}
+}
+
+// ─── Messages endpoint (/messages) ───────────────────────────────────────────
+// Dust POSTs JSON-RPC requests here. We route them and send responses via SSE.
+
+func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("sessionId")
+	s.mu.RLock()
+	sess, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+
+	var req mcp.Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+
+	// Handle the request asynchronously and push response into SSE channel
+	go func() {
+		resp := s.handleRequest(sess, req)
+		sess.ch <- resp
+	}()
+}
+
+// ─── JSON-RPC router ─────────────────────────────────────────────────────────
+
+func (s *Server) handleRequest(sess *session, req mcp.Request) mcp.Response {
+	switch req.Method {
+	case "initialize":
+		return mcp.OK(req.ID, mcp.InitializeResult{
+			ProtocolVersion: "2024-11-05",
+			Capabilities: mcp.Capabilities{
+				Tools: &mcp.ToolsCapability{ListChanged: false},
+			},
+			ServerInfo: mcp.ServerInfo{Name: "unipile-bridge", Version: "1.0.0"},
+		})
+
+	case "notifications/initialized":
+		// No-op notification from client
+		return mcp.Response{}
+
+	case "ping":
+		return mcp.OK(req.ID, map[string]any{})
+
+	case "tools/list":
+		return mcp.OK(req.ID, mcp.ToolsListResult{Tools: toolCatalog()})
+
+	case "tools/call":
+		var params mcp.CallToolParams
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return mcp.Err(req.ID, -32602, "invalid params: "+err.Error())
+		}
+		result := dispatch(sess.client, params)
+		return mcp.OK(req.ID, result)
+
+	default:
+		return mcp.Err(req.ID, -32601, fmt.Sprintf("method not found: %s", req.Method))
+	}
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+func extractBearer(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		// Also allow ?api_key=... for easier testing in browser
+		return r.URL.Query().Get("api_key")
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
