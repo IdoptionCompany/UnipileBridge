@@ -40,23 +40,22 @@ func main() {
 	mux := http.NewServeMux()
 	srv := bridge.NewServer(baseURL, creds, authToken)
 
-	// MCP /sse: GET = legacy SSE transport, POST = Streamable HTTP transport
+	// MCP /sse: Streamable HTTP transport only (POST). GET is rejected.
 	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
-		case http.MethodGet:
-			srv.HandleSSE(w, r)
 		case http.MethodPost:
 			srv.HandleStreamableHTTP(w, r)
 		case http.MethodOptions:
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			// Return 405 for GET and anything else — forces Dust to use Streamable HTTP (POST)
+			w.Header().Set("Allow", "POST, OPTIONS")
+			http.Error(w, `{"error":"use POST for Streamable HTTP transport"}`, http.StatusMethodNotAllowed)
 		}
 	})
-	mux.HandleFunc("/messages", srv.HandleMessages)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
