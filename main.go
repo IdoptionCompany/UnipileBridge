@@ -35,7 +35,8 @@ func main() {
 
 	userMap := os.Getenv("USER_MAP")
 	sharedKey := os.Getenv("UNIPILE_SHARED_KEY")
-	creds := bridge.NewStore(userMap, sharedKey)
+	accountMap := os.Getenv("ACCOUNT_MAP")
+	creds := bridge.NewStore(userMap, sharedKey, accountMap)
 
 	mux := http.NewServeMux()
 	srv := bridge.NewServer(baseURL, creds, authToken)

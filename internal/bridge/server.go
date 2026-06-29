@@ -72,10 +72,12 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	sessionID := uuid.NewString()
 	ch := make(chan mcp.Response, 32)
 
+	accountID := s.credentials.ResolveAccountID(userEmail)
+
 	s.mu.Lock()
 	s.sessions[sessionID] = &session{
 		ch:     ch,
-		client: unipile.NewClient(s.baseURL, apiKey),
+		client: unipile.NewClient(s.baseURL, apiKey, accountID),
 	}
 	s.mu.Unlock()
 
@@ -194,9 +196,10 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accountID := s.credentials.ResolveAccountID(userEmail)
 	sess := &session{
 		ch:     make(chan mcp.Response, 1),
-		client: unipile.NewClient(s.baseURL, apiKey),
+		client: unipile.NewClient(s.baseURL, apiKey, accountID),
 	}
 
 	resp := s.handleRequest(sess, req)

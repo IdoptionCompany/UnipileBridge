@@ -165,6 +165,14 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 		}
 		return 0
 	}
+	// acctID prefers an explicit account_id arg, falling back to the user's
+	// default account_id (resolved from ACCOUNT_MAP at session creation).
+	acctID := func() string {
+		if v, ok := args["account_id"].(string); ok && v != "" {
+			return v
+		}
+		return client.DefaultAccountID
+	}
 
 	var (
 		raw json.RawMessage
@@ -178,29 +186,29 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 
 	// LinkedIn
 	case "search_linkedin_people":
-		raw, err = client.SearchLinkedIn(str("account_id"), str("query"))
+		raw, err = client.SearchLinkedIn(acctID(), str("query"))
 	case "get_linkedin_profile":
-		raw, err = client.GetUserProfile(str("account_id"), str("provider_id"))
+		raw, err = client.GetUserProfile(acctID(), str("provider_id"))
 	case "list_linkedin_connections":
-		raw, err = client.ListConnections(str("account_id"))
+		raw, err = client.ListConnections(acctID())
 	case "send_linkedin_invitation":
-		raw, err = client.SendInvitation(str("account_id"), str("provider_id"), str("message"))
+		raw, err = client.SendInvitation(acctID(), str("provider_id"), str("message"))
 
 	// Messaging
 	case "list_chats":
-		raw, err = client.ListChats(str("account_id"))
+		raw, err = client.ListChats(acctID())
 	case "get_chat_messages":
 		raw, err = client.GetChatMessages(str("chat_id"))
 	case "send_new_message":
-		raw, err = client.StartChatAndSend(str("account_id"), str("attendee_id"), str("text"))
+		raw, err = client.StartChatAndSend(acctID(), str("attendee_id"), str("text"))
 	case "reply_to_chat":
 		raw, err = client.SendMessageToChat(str("chat_id"), str("text"))
 
 	// Email
 	case "list_emails":
-		raw, err = client.ListEmails(str("account_id"), str("folder"), intVal("limit"))
+		raw, err = client.ListEmails(acctID(), str("folder"), intVal("limit"))
 	case "send_email":
-		raw, err = client.SendEmail(str("account_id"), str("to"), str("subject"), str("body"))
+		raw, err = client.SendEmail(acctID(), str("to"), str("subject"), str("body"))
 
 	default:
 		return mcp.ErrorResult(fmt.Sprintf("unknown tool: %s", params.Name))

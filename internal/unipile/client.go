@@ -12,15 +12,17 @@ import (
 
 // Client is a lightweight Unipile API client bound to one user's API key.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL          string
+	apiKey           string
+	DefaultAccountID string
+	httpClient       *http.Client
 }
 
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL, apiKey, defaultAccountID string) *Client {
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  apiKey,
+		baseURL:          baseURL,
+		apiKey:           apiKey,
+		DefaultAccountID: defaultAccountID,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
