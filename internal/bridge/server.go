@@ -133,6 +133,9 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 // Dust POSTs JSON-RPC requests here. We route them and send responses via SSE.
 
 func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
+	log.Printf("🔍 /messages headers — %v", r.Header)
+	log.Printf("🔍 /messages url — %s", r.URL.String())
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
