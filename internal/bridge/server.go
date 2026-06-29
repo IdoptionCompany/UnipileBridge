@@ -20,6 +20,7 @@ import (
 type session struct {
 	ch     chan mcp.Response
 	client *unipile.Client
+	mu     sync.Mutex // guards client (re-resolved per /messages POST)
 }
 
 // Server is the MCP bridge server.
@@ -150,6 +151,25 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+
+	// Re-resolve per-user credentials from the POST /messages request — Dust
+	// sends user context here (header/query), not on the GET /sse handshake.
+	postEmail := r.Header.Get("X-Dust-User-Email")
+	if postEmail == "" {
+		postEmail = r.URL.Query().Get("dust_user_email")
+	}
+	log.Printf("🔍 /messages — sessionID=%s method=%q postEmail=%q", sessionID, req.Method, postEmail)
+	if postEmail != "" {
+		bearer := extractBearer(r)
+		legacy := s.authToken == ""
+		if apiKey, err := s.credentials.Resolve(postEmail, bearer, legacy); err == nil {
+			accountID := s.credentials.ResolveAccountID(postEmail)
+			sess.mu.Lock()
+			sess.client = unipile.NewClient(s.baseURL, apiKey, accountID)
+			sess.mu.Unlock()
+			log.Printf("🔑 /messages session %s — email=%q accountID=%q", sessionID, postEmail, accountID)
+		}
 	}
 
 	w.WriteHeader(http.StatusAccepted)
