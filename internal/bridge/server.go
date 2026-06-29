@@ -183,11 +183,21 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accountID := s.credentials.ResolveAccountID(userEmail)
+
 	var req mcp.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("🔍 POST /sse — method=%q email=%q accountID=%q url=%q headers=%v",
+		req.Method,
+		userEmail,
+		accountID,
+		r.URL.String(),
+		r.Header,
+	)
 
 	// Notifications have no ID — return 202, no body (per MCP spec)
 	if req.ID == nil {
@@ -196,7 +206,6 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accountID := s.credentials.ResolveAccountID(userEmail)
 	sess := &session{
 		ch:     make(chan mcp.Response, 1),
 		client: unipile.NewClient(s.baseURL, apiKey, accountID),
