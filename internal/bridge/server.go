@@ -185,6 +185,13 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notifications have no ID — return 202, no body (per MCP spec)
+	if req.ID == nil {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	sess := &session{
 		ch:     make(chan mcp.Response, 1),
 		client: unipile.NewClient(s.baseURL, apiKey),
@@ -192,22 +199,10 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp := s.handleRequest(sess, req)
 
-	// If client accepts SSE, respond as SSE stream; otherwise plain JSON
-	accept := r.Header.Get("Accept")
-	if strings.Contains(accept, "text/event-stream") {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		b, _ := json.Marshal(resp)
-		fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(b))
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(resp)
-	}
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
 
 // ─── JSON-RPC router ─────────────────────────────────────────────────────────
