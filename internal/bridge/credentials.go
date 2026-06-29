@@ -19,7 +19,7 @@ func NewStore(userMap, sharedKey, accountMap, tokenMap string) *Store {
 	return &Store{
 		users:      parsePairs(userMap, "USER_MAP", true),
 		accountIDs: parsePairs(accountMap, "ACCOUNT_MAP", true),
-		tokens:     parsePairs(tokenMap, "TOKEN_MAP", false),
+		tokens:     parseTokenMap(tokenMap),
 		sharedKey:  strings.TrimSpace(sharedKey),
 	}
 }
@@ -58,8 +58,30 @@ func parsePairs(raw, label string, keyIsEmail bool) map[string]string {
 	return m
 }
 
+// parseTokenMap parses TOKEN_MAP ("token:email,...") into a token->email map.
+// Tokens are kept verbatim (case-sensitive, may contain no "@"); entries with an
+// empty token or email are skipped. Each loaded entry is logged at startup.
+func parseTokenMap(raw string) map[string]string {
+	m := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		idx := strings.Index(pair, ":")
+		if idx <= 0 || idx == len(pair)-1 {
+			continue
+		}
+		token := strings.TrimSpace(pair[:idx])
+		email := strings.TrimSpace(pair[idx+1:])
+		if token != "" && email != "" {
+			m[token] = email
+			log.Printf("credentials: TOKEN_MAP loaded token=%q → email=%q", token, email)
+		}
+	}
+	return m
+}
+
 // ResolveEmailFromToken returns the email mapped to a per-user bearer token, or "".
 func (s *Store) ResolveEmailFromToken(token string) string {
+	log.Printf("credentials: looking up token=%q in %d entries", token, len(s.tokens))
 	if email, ok := s.tokens[token]; ok {
 		return email
 	}
