@@ -74,6 +74,9 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	accountID := s.credentials.ResolveAccountID(userEmail)
 
+	log.Printf("🔍 GET /sse — email=%q accountID=%q url=%q",
+		userEmail, accountID, r.URL.String())
+
 	s.mu.Lock()
 	s.sessions[sessionID] = &session{
 		ch:     ch,
@@ -107,7 +110,7 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", messagesURL)
 	flusher.Flush()
 
-	log.Printf("session %s connected (key: %s…)", sessionID, apiKey[:min(8, len(apiKey))])
+	log.Printf("session %s connected (key: %.8s… email=%q accountID=%q)", sessionID, apiKey, userEmail, accountID)
 
 	// Stream responses until client disconnects
 	for {
