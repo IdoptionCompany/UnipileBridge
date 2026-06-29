@@ -22,3 +22,4 @@ COPY --from=builder /unipile-bridge /unipile-bridge
 EXPOSE 3000
 
 ENTRYPOINT ["/unipile-bridge"]
+# bust cache Mon Jun 29 16:40:21 CEST 2026
