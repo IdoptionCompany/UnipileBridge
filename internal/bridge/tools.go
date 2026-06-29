@@ -25,9 +25,10 @@ func toolCatalog() []mcp.Tool {
 			InputSchema: mcp.InputSchema{
 				Type: "object",
 				Properties: map[string]mcp.Property{
-					"query": {Type: "string", Description: "Name or keywords to search for"},
+					"account_id": {Type: "string", Description: "Your Unipile LinkedIn account ID"},
+					"query":      {Type: "string", Description: "Name or keywords to search for"},
 				},
-				Required: []string{"query"},
+				Required: []string{"account_id", "query"},
 			},
 		},
 		{
@@ -177,7 +178,7 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 
 	// LinkedIn
 	case "search_linkedin_people":
-		raw, err = client.SearchLinkedIn(str("query"))
+		raw, err = client.SearchLinkedIn(str("account_id"), str("query"))
 	case "get_linkedin_profile":
 		raw, err = client.GetUserProfile(str("account_id"), str("provider_id"))
 	case "list_linkedin_connections":

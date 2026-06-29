@@ -105,10 +105,15 @@ func (c *Client) SendMessageToChat(chatID, text string) (json.RawMessage, error)
 
 // ─── LinkedIn ────────────────────────────────────────────────────────────────
 
-func (c *Client) SearchLinkedIn(query string) (json.RawMessage, error) {
+func (c *Client) SearchLinkedIn(accountID, query string) (json.RawMessage, error) {
 	q := url.Values{}
-	q.Set("query", query)
-	return c.do("GET", "/api/v1/linkedin/search/people", q, nil)
+	q.Set("account_id", accountID)
+	body := map[string]any{
+		"api":      "classic",
+		"category": "people",
+		"keywords": query,
+	}
+	return c.do("POST", "/api/v1/linkedin/search", q, body)
 }
 
 func (c *Client) GetLinkedInProfile(profileURL string) (json.RawMessage, error) {
@@ -117,17 +122,22 @@ func (c *Client) GetLinkedInProfile(profileURL string) (json.RawMessage, error) 
 	return c.do("GET", "/api/v1/users/me", q, nil)
 }
 
-func (c *Client) GetUserProfile(accountID, providerID string) (json.RawMessage, error) {
-	path := "/api/v1/linkedin/profiles/" + providerID
+func (c *Client) GetUserProfile(accountID, identifier string) (json.RawMessage, error) {
 	q := url.Values{}
+	q.Set("linkedin_sections", "*")
 	q.Set("account_id", accountID)
-	return c.do("GET", path, q, nil)
+	return c.do("GET", "/api/v1/users/"+identifier, q, nil)
 }
 
 func (c *Client) ListConnections(accountID string) (json.RawMessage, error) {
 	q := url.Values{}
 	q.Set("account_id", accountID)
-	return c.do("GET", "/api/v1/linkedin/relations", q, nil)
+	body := map[string]any{
+		"api":              "classic",
+		"category":         "people",
+		"network_distance": []int{1},
+	}
+	return c.do("POST", "/api/v1/linkedin/search", q, body)
 }
 
 func (c *Client) SendInvitation(accountID, providerID, message string) (json.RawMessage, error) {
