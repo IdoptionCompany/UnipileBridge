@@ -5,6 +5,10 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
+# Increment CACHE_BUST to force full recompilation
+ARG CACHE_BUST=2
+RUN echo "Cache bust: $CACHE_BUST"
+
 COPY . .
 
 # Resolve imports and write go.sum at build time (no committed go.sum yet).
