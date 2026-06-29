@@ -11,21 +11,25 @@ var ErrNoCredential = errors.New("no Unipile credential for caller")
 type Store struct {
 	users      map[string]string
 	accountIDs map[string]string
+	tokens     map[string]string // bearer token -> email
 	sharedKey  string
 }
 
-func NewStore(userMap, sharedKey, accountMap string) *Store {
+func NewStore(userMap, sharedKey, accountMap, tokenMap string) *Store {
 	return &Store{
-		users:      parsePairs(userMap, "USER_MAP"),
-		accountIDs: parsePairs(accountMap, "ACCOUNT_MAP"),
+		users:      parsePairs(userMap, "USER_MAP", true),
+		accountIDs: parsePairs(accountMap, "ACCOUNT_MAP", true),
+		tokens:     parsePairs(tokenMap, "TOKEN_MAP", false),
 		sharedKey:  strings.TrimSpace(sharedKey),
 	}
 }
 
-// parsePairs parses a comma-separated list of "email:value" pairs, splitting
-// each entry on its first colon. Malformed entries are logged (tagged with
-// label) and skipped. Emails are lowercased/trimmed for case-insensitive lookup.
-func parsePairs(raw, label string) map[string]string {
+// parsePairs parses a comma-separated list of "key:value" pairs, splitting each
+// entry on its first colon. Malformed entries are logged (tagged with label) and
+// skipped. When keyIsEmail is true the key is lowercased and required to contain
+// "@" (email-keyed maps for case-insensitive lookup); when false the key is kept
+// verbatim and only required to be non-empty (e.g. case-sensitive bearer tokens).
+func parsePairs(raw, label string, keyIsEmail bool) map[string]string {
 	m := make(map[string]string)
 	if raw == "" {
 		return m
@@ -40,15 +44,26 @@ func parsePairs(raw, label string) map[string]string {
 			log.Printf("⚠️  skipping malformed %s entry: %q", label, entry)
 			continue
 		}
-		email := strings.ToLower(strings.TrimSpace(entry[:idx]))
+		key := strings.TrimSpace(entry[:idx])
 		val := strings.TrimSpace(entry[idx+1:])
-		if email == "" || !strings.Contains(email, "@") || val == "" {
+		if keyIsEmail {
+			key = strings.ToLower(key)
+		}
+		if key == "" || val == "" || (keyIsEmail && !strings.Contains(key, "@")) {
 			log.Printf("⚠️  skipping malformed %s entry: %q", label, entry)
 			continue
 		}
-		m[email] = val
+		m[key] = val
 	}
 	return m
+}
+
+// ResolveEmailFromToken returns the email mapped to a per-user bearer token, or "".
+func (s *Store) ResolveEmailFromToken(token string) string {
+	if email, ok := s.tokens[token]; ok {
+		return email
+	}
+	return ""
 }
 
 // ResolveAccountID returns the Unipile account_id mapped to email, or "".

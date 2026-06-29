@@ -41,39 +41,47 @@ func NewServer(baseURL string, creds *Store, authToken string) *Server {
 	}
 }
 
-// ─── SSE endpoint (/sse) ─────────────────────────────────────────────────────
-// Dust connects here first. We:
-//  1. Extract the bearer token (= user's Unipile API key)
-//  2. Mint a session ID
-//  3. Send the MCP `endpoint` event pointing to /messages?sessionId=xxx
-//  4. Keep the connection alive and stream JSON-RPC responses
-
-func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
+// resolveCaller authenticates the request's bearer token and resolves the
+// caller's Unipile credentials. Identity comes from the bearer:
+//   - bearer == authToken  → shared token, no per-user identity (shared account)
+//   - bearer in TOKEN_MAP  → that user's email → per-user key + account_id
+//   - otherwise            → 401
+// On success status is 0; on failure it returns the HTTP status and JSON body
+// the handler should send.
+func (s *Server) resolveCaller(r *http.Request) (apiKey, accountID, userEmail string, status int, errBody string) {
 	bearer := extractBearer(r)
 	legacy := s.authToken == ""
-
-	// Bridge auth
-	if !legacy && bearer != s.authToken {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
+	if !legacy {
+		if bearer == s.authToken {
+			// shared token — no per-user identity
+		} else if email := s.credentials.ResolveEmailFromToken(bearer); email != "" {
+			userEmail = email
+		} else {
+			return "", "", "", http.StatusUnauthorized, `{"error":"unauthorized"}`
+		}
 	}
-
-	// Resolve Unipile API key
-	userEmail := r.URL.Query().Get("dust_user_email")
-	if userEmail == "" {
-		userEmail = r.Header.Get("X-Dust-User-Email")
-	}
-	apiKey, err := s.credentials.Resolve(userEmail, bearer, legacy)
+	key, err := s.credentials.Resolve(userEmail, bearer, legacy)
 	if err != nil {
 		log.Printf("credential lookup failed for %q: %v", userEmail, err)
-		http.Error(w, `{"error":"no Unipile credential for user"}`, http.StatusForbidden)
+		return "", "", userEmail, http.StatusForbidden, `{"error":"no Unipile credential for user"}`
+	}
+	return key, s.credentials.ResolveAccountID(userEmail), userEmail, 0, ""
+}
+
+// ─── SSE endpoint (/sse) ─────────────────────────────────────────────────────
+// Dust connects here first. We authenticate, mint a session bound to the
+// caller's Unipile client, advertise the /messages endpoint, and stream
+// JSON-RPC responses until the client disconnects.
+
+func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	if status != 0 {
+		http.Error(w, errBody, status)
 		return
 	}
 
 	sessionID := uuid.NewString()
 	ch := make(chan mcp.Response, 32)
-
-	accountID := s.credentials.ResolveAccountID(userEmail)
 
 	log.Printf("🔍 GET /sse — email=%q accountID=%q url=%q",
 		userEmail, accountID, r.URL.String())
@@ -156,24 +164,18 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-resolve per-user credentials from the POST /messages request — Dust
-	// sends user context here (header/query), not on the GET /sse handshake.
-	postEmail := r.Header.Get("X-Dust-User-Email")
-	if postEmail == "" {
-		postEmail = r.URL.Query().Get("dust_user_email")
+	// Re-resolve per-user credentials from this request's bearer token and swap
+	// the session's Unipile client before dispatch — Dust identifies the user via
+	// the per-request bearer token, not the /sse handshake.
+	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	if status != 0 {
+		http.Error(w, errBody, status)
+		return
 	}
-	log.Printf("🔍 /messages — sessionID=%s method=%q postEmail=%q", sessionID, req.Method, postEmail)
-	if postEmail != "" {
-		bearer := extractBearer(r)
-		legacy := s.authToken == ""
-		if apiKey, err := s.credentials.Resolve(postEmail, bearer, legacy); err == nil {
-			accountID := s.credentials.ResolveAccountID(postEmail)
-			sess.mu.Lock()
-			sess.client = unipile.NewClient(s.baseURL, apiKey, accountID)
-			sess.mu.Unlock()
-			log.Printf("🔑 /messages session %s — email=%q accountID=%q", sessionID, postEmail, accountID)
-		}
-	}
+	sess.mu.Lock()
+	sess.client = unipile.NewClient(s.baseURL, apiKey, accountID)
+	sess.mu.Unlock()
+	log.Printf("🔑 /messages session %s — method=%q email=%q accountID=%q", sessionID, req.Method, userEmail, accountID)
 
 	w.WriteHeader(http.StatusAccepted)
 
@@ -190,26 +192,11 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // a one-shot SSE event or as plain JSON, depending on the Accept header.
 
 func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
-	bearer := extractBearer(r)
-	legacy := s.authToken == ""
-
-	if !legacy && bearer != s.authToken {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	if status != 0 {
+		http.Error(w, errBody, status)
 		return
 	}
-
-	userEmail := r.URL.Query().Get("dust_user_email")
-	if userEmail == "" {
-		userEmail = r.Header.Get("X-Dust-User-Email")
-	}
-
-	apiKey, err := s.credentials.Resolve(userEmail, bearer, legacy)
-	if err != nil {
-		http.Error(w, `{"error":"no Unipile credential"}`, http.StatusForbidden)
-		return
-	}
-
-	accountID := s.credentials.ResolveAccountID(userEmail)
 
 	var req mcp.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

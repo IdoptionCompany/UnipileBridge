@@ -85,7 +85,7 @@ func TestNewStore(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewStore(tc.userMap, "", "")
+			s := NewStore(tc.userMap, "", "", "")
 			if len(s.users) != tc.wantLen {
 				t.Fatalf("want %d entries, got %d: %v", tc.wantLen, len(s.users), s.users)
 			}
