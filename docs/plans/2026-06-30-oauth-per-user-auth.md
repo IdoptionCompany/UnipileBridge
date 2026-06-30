@@ -746,16 +746,20 @@ git commit -m "refactor(bridge): simplify Resolve(email); drop code-logging"
 **Files:**
 - Modify: `internal/bridge/server.go`
 
-- [ ] **Step 1: Update the `Server` struct and `NewServer`**
+- [ ] **Step 1: Update the `Server` struct and `NewServer` (final form)**
 
-Replace the `authToken` field with a token verifier. In the struct, drop `authToken string` and add `tokens *oauth.Issuer`. Add the import `"github.com/idoption/unipileBridge/internal/oauth"`. New constructor:
+Add the import `"github.com/idoption/unipileBridge/internal/oauth"`. In the
+`Server` struct: **drop** `authToken string`; **add** `publicURL string` (the
+bridge's public URL, distinct from `baseURL` which is the Unipile API base) and
+`tokens *oauth.Issuer`. New constructor written once in final form:
 ```go
-func NewServer(baseURL string, creds *Store, tokens *oauth.Issuer) *Server {
+func NewServer(baseURL, publicURL string, creds *Store, tokens *oauth.Issuer) *Server {
 	return &Server{
-		baseURL:  baseURL,
+		baseURL:     baseURL,
+		publicURL:   publicURL,
 		credentials: creds,
-		tokens:   tokens,
-		sessions: make(map[string]*session),
+		tokens:      tokens,
+		sessions:    make(map[string]*session),
 	}
 }
 ```
@@ -797,7 +801,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, status int, body string) 
 	http.Error(w, body, status)
 }
 ```
-Note: `s.baseURL` here must be the bridge's public URL. Reuse the existing `baseURL` field **only if** it already holds the public base; the spec uses `PUBLIC_BASE_URL` for this. To avoid overloading `baseURL` (which is the Unipile API base), add a `publicURL string` field to `Server`, set from `PUBLIC_BASE_URL` in `NewServer`. Update `NewServer` signature to `NewServer(baseURL, publicURL string, creds *Store, tokens *oauth.Issuer)` and use `s.publicURL` in the header. Replace the three `http.Error(w, errBody, status)` calls in `HandleSSE`, `HandleMessages`, `HandleStreamableHTTP` with `s.writeAuthError(w, status, errBody)`.
+`s.publicURL` (added to the struct in Step 1) is the bridge's public URL. Replace the three `http.Error(w, errBody, status)` calls in `HandleSSE`, `HandleMessages`, and `HandleStreamableHTTP` (the `if status != 0` branches) with `s.writeAuthError(w, status, errBody)`.
 
 - [ ] **Step 4: Add the PRM handler**
 
@@ -860,7 +864,11 @@ Note: repo build is briefly red between this commit and Task 6 (main.go caller).
 
 - [ ] **Step 1: Load env + build the oauth issuer/server**
 
-After the existing `userMap`/`sharedKey`/`accountMap` loads, replace the `BRIDGE_AUTH_TOKEN` block with:
+The current `main.go` has, in order: an `authToken := os.Getenv("BRIDGE_AUTH_TOKEN")` block (with a warning `log.Println`), then `userMap`, `sharedKey`, `accountMap`, `tokenMap := os.Getenv("TOKEN_MAP")`, then `creds := bridge.NewStore(userMap, sharedKey, accountMap, tokenMap)`.
+
+(a) **Delete the entire `authToken := os.Getenv("BRIDGE_AUTH_TOKEN")` block** (the assignment and its `if authToken == "" { log.Println(...) }` warning).
+(b) **Keep** the `userMap`/`sharedKey`/`accountMap`/`tokenMap` lines and the existing `creds := bridge.NewStore(userMap, sharedKey, accountMap, tokenMap)` line **unchanged** (`tokenMap` stays in use — do NOT introduce a duplicate `os.Getenv("TOKEN_MAP")`).
+(c) **Insert** the OAuth setup immediately after the `creds := …` line:
 ```go
 	publicURL := os.Getenv("PUBLIC_BASE_URL")
 	if publicURL == "" {
@@ -884,7 +892,6 @@ After the existing `userMap`/`sharedKey`/`accountMap` loads, replace the `BRIDGE
 	}
 
 	tokenIssuer := oauth.NewIssuer([]byte(jwtSecret), publicURL, publicURL+"/sse")
-	creds := bridge.NewStore(userMap, sharedKey, accountMap, os.Getenv("TOKEN_MAP"))
 	oauthSrv := oauth.NewServer(oauth.Config{
 		ClientID:     clientID,
 		ClientSecret: os.Getenv("OAUTH_CLIENT_SECRET"),
@@ -892,7 +899,7 @@ After the existing `userMap`/`sharedKey`/`accountMap` loads, replace the `BRIDGE
 		Scope:        scope,
 	}, tokenIssuer, creds.ResolveEmailFromToken)
 ```
-Add imports: `"github.com/idoption/unipileBridge/internal/oauth"` (keep `bridge`). Remove the old `creds := bridge.NewStore(...)` line you replaced and the `BRIDGE_AUTH_TOKEN` warning block.
+Add the import `"github.com/idoption/unipileBridge/internal/oauth"` (keep `bridge`).
 
 - [ ] **Step 2: Update the server construction + routes**
 
