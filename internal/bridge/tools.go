@@ -180,6 +180,24 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 		}
 		return ""
 	}
+	// ensureChatOwned blocks chat_id operations (which carry no account_id) on
+	// chats that don't belong to the session's assigned account — otherwise a
+	// caller could read or reply to another user's conversation via its chat_id.
+	// Fail-closed: any lookup error rejects the operation. Shared-token sessions
+	// (no assigned account) are not scoped.
+	ensureChatOwned := func(chatID string) error {
+		if client.DefaultAccountID == "" {
+			return nil
+		}
+		owner, err := client.ChatAccountID(chatID)
+		if err != nil {
+			return err
+		}
+		if owner != client.DefaultAccountID {
+			return fmt.Errorf("chat does not belong to your account")
+		}
+		return nil
+	}
 
 	var (
 		raw json.RawMessage
@@ -205,11 +223,15 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 	case "list_chats":
 		raw, err = client.ListChats(acctID())
 	case "get_chat_messages":
-		raw, err = client.GetChatMessages(str("chat_id"))
+		if err = ensureChatOwned(str("chat_id")); err == nil {
+			raw, err = client.GetChatMessages(str("chat_id"))
+		}
 	case "send_new_message":
 		raw, err = client.StartChatAndSend(acctID(), str("attendee_id"), str("text"))
 	case "reply_to_chat":
-		raw, err = client.SendMessageToChat(str("chat_id"), str("text"))
+		if err = ensureChatOwned(str("chat_id")); err == nil {
+			raw, err = client.SendMessageToChat(str("chat_id"), str("text"))
+		}
 
 	// Email
 	case "list_emails":

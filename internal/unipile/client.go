@@ -91,6 +91,22 @@ func (c *Client) GetChatMessages(chatID string) (json.RawMessage, error) {
 	return c.do("GET", "/api/v1/chats/"+chatID+"/messages", nil, nil)
 }
 
+// ChatAccountID returns the account_id that owns a chat, used to enforce that a
+// caller only touches chats belonging to their own connected account.
+func (c *Client) ChatAccountID(chatID string) (string, error) {
+	raw, err := c.do("GET", "/api/v1/chats/"+chatID, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	var meta struct {
+		AccountID string `json:"account_id"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return "", fmt.Errorf("parse chat: %w", err)
+	}
+	return meta.AccountID, nil
+}
+
 func (c *Client) StartChatAndSend(accountID, attendeeID, text string) (json.RawMessage, error) {
 	body := map[string]any{
 		"account_id":    accountID,
