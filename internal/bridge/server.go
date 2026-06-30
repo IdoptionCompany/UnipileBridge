@@ -92,7 +92,7 @@ func (s *Server) HandleProtectedResourceMetadata(w http.ResponseWriter, r *http.
 // JSON-RPC responses until the client disconnects.
 
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
-	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	apiKey, accountID, _, status, errBody := s.resolveCaller(r)
 	if status != 0 {
 		s.writeAuthError(w, status, errBody)
 		return
