@@ -69,7 +69,8 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	email := s.resolveEmail(r.FormValue("code"))
 	if email == "" {
-		w.WriteHeader(http.StatusOK)
+		// renderForm sets Content-Type then writes the body (implicit 200);
+		// do NOT WriteHeader first or the text/html type is lost.
 		renderForm(w, formData{Err: "Unknown code — try again.", RedirectURI: redirectURI, State: state, Challenge: challenge})
 		return
 	}
