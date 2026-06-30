@@ -165,13 +165,20 @@ func dispatch(client *unipile.Client, params mcp.CallToolParams) mcp.CallToolRes
 		}
 		return 0
 	}
-	// acctID prefers an explicit account_id arg, falling back to the user's
-	// default account_id (resolved from ACCOUNT_MAP at session creation).
+	// acctID enforces account isolation. A session with an assigned account
+	// (per-user token → ACCOUNT_MAP → DefaultAccountID) ALWAYS acts on that
+	// account, ignoring any caller-supplied account_id — otherwise a caller
+	// could pass someone else's account_id and act as them (the shared Unipile
+	// key can reach every connected account). Only sessions WITHOUT an assigned
+	// account (e.g. the shared bridge token) may specify account_id explicitly.
 	acctID := func() string {
+		if client.DefaultAccountID != "" {
+			return client.DefaultAccountID
+		}
 		if v, ok := args["account_id"].(string); ok && v != "" {
 			return v
 		}
-		return client.DefaultAccountID
+		return ""
 	}
 
 	var (
