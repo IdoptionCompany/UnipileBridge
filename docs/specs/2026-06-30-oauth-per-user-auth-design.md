@@ -117,9 +117,12 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request)     // auth
 
 `HandleAuthorize` (GET): validate `client_id`, `redirect_uri` (allowlist),
 `response_type=code`, `code_challenge_method=S256`; render the code form, echoing
-the OAuth params as hidden fields. (POST): read the submitted code →
-`resolveEmail`; if unknown, re-render with an error; else `put` an auth code and
-302 to `redirect_uri?code=…&state=…`.
+the OAuth params (`state`, `redirect_uri`, `code_challenge`, …) as **hidden form
+fields**. (POST): read the submitted code → `resolveEmail`; if unknown, re-render
+with an error; else `put` an auth code and 302 to `redirect_uri?code=…&state=…`.
+Note: `state` round-trips through the hidden form field and back onto the 302 —
+it is deliberately **not** stored in `authCode` (the code store holds only what
+`/token` needs: email, codeChallenge, redirectURI, expiry).
 
 `HandleToken`: dispatch on `grant_type`.
 - `authorization_code`: validate `client_id` (+ `client_secret` if configured),
@@ -132,30 +135,75 @@ the OAuth params as hidden fields. (POST): read the submitted code →
 
 ## Changes to `internal/bridge/server.go`
 
-`resolveCaller` changes its identity source only:
+`resolveCaller` changes its identity source and enforces isolation-on-by-default:
 ```go
 func (s *Server) resolveCaller(r *http.Request) (apiKey, accountID, userEmail string, status int, errBody string) {
     bearer := extractBearer(r)
-    email, err := s.tokens.VerifyAccess(bearer) // bridge-issued JWT
+    email, err := s.tokens.VerifyAccess(bearer) // rejects "" / invalid / expired / wrong iss|aud
     if err != nil {
-        // 401 + WWW-Authenticate so Dust starts the OAuth flow.
+        // 401 + WWW-Authenticate — THE branch that bootstraps Dust's OAuth flow.
         return "", "", "", http.StatusUnauthorized, `{"error":"unauthorized"}`
     }
     userEmail = email
-    key, err := s.credentials.Resolve(userEmail, "", false)
+    accountID = s.credentials.ResolveAccountID(userEmail)
+    if accountID == "" {
+        // Verified user with no ACCOUNT_MAP entry. MUST hard-fail: an empty
+        // account_id would disable acctID()/ensureChatOwned/scoped ListAccounts
+        // (they key off a non-empty DefaultAccountID), silently removing isolation.
+        return "", "", userEmail, http.StatusForbidden, `{"error":"no account mapped for user"}`
+    }
+    key, err := s.credentials.Resolve(userEmail) // simplified signature, see below
     if err != nil {
         return "", "", userEmail, http.StatusForbidden, `{"error":"no Unipile credential for user"}`
     }
-    return key, s.credentials.ResolveAccountID(userEmail), userEmail, 0, ""
+    return key, accountID, userEmail, 0, ""
 }
 ```
-- The 401 response MUST set `WWW-Authenticate: Bearer resource_metadata="<PUBLIC_BASE_URL>/.well-known/oauth-protected-resource"` (a minimal PRM endpoint is included for correctness even though Static OAuth doesn't require discovery).
-- `Server` gains a `tokens *oauth.Issuer` field; `NewServer` takes it.
-- Everything downstream is unchanged: forced account_id (`acctID`), chat-ownership
-  (`ensureChatOwned`), scoped `ListAccounts` — all key off the (now JWT-derived)
-  email.
+- **Empty/invalid bearer → 401.** `extractBearer` returning `""` (no `Authorization`
+  header) MUST flow to `VerifyAccess("")` → error → 401 with
+  `WWW-Authenticate: Bearer resource_metadata="<PUBLIC_BASE_URL>/.well-known/oauth-protected-resource"`.
+  This is the single most important branch — it's what triggers Dust to start the
+  flow. (A minimal PRM endpoint is included for correctness even though Static
+  OAuth doesn't strictly require discovery.)
+- **Isolation is now mandatory.** Because every authenticated caller is a known
+  user, a verified email with no `ACCOUNT_MAP` entry is a **403**, never a
+  silent unscoped session. Downstream guards (`acctID`, `ensureChatOwned`, scoped
+  `ListAccounts`) are unchanged — they key off the resolved, now-guaranteed-non-empty
+  `DefaultAccountID`.
+- **`extractBearer` is simplified:** drop the `?api_key=` query-param fallback
+  (server.go:277). Passing a JWT in a URL is an OAuth 2.1 anti-pattern (lands in
+  proxy/access logs and referrers). Only the `Authorization: Bearer` header is read.
+- **Remove `BRIDGE_AUTH_TOKEN` plumbing entirely:** delete the `Server.authToken`
+  field (server.go:30), drop the `authToken` parameter from `NewServer`
+  (new signature: `NewServer(baseURL string, creds *Store, tokens *oauth.Issuer)`),
+  and remove the `legacy` logic. `main.go`'s call is updated to match.
 - `TOKEN_MAP` is no longer read at request time; it backs the `/authorize` code
   lookup via `Store.ResolveEmailFromToken`.
+
+## Changes to `internal/bridge/credentials.go`
+
+Simplify `Resolve` now that bearer/legacy auth is gone:
+```go
+// Resolve returns the Unipile API key for a user's email: their USER_MAP key if
+// present, else the shared key, else ErrNoCredential.
+func (s *Store) Resolve(email string) (string, error) {
+    email = strings.ToLower(strings.TrimSpace(email))
+    if email != "" {
+        if key, ok := s.users[email]; ok {
+            return key, nil
+        }
+    }
+    if s.sharedKey != "" {
+        return s.sharedKey, nil
+    }
+    return "", ErrNoCredential
+}
+```
+This drops the dead `legacy && bearer` branch and the last `BRIDGE_AUTH_TOKEN`-era
+coupling. `credentials_test.go`'s `TestResolve` is rewritten for the 1-arg
+signature (the precedence rows for shared-key fallback still apply; the
+bearer/legacy rows are removed). `NewStore`/`ResolveAccountID`/`ResolveEmailFromToken`
+and their tests are unchanged.
 
 ## `main.go` + routes + env
 
@@ -194,15 +242,32 @@ Retained: `TOKEN_MAP` (codes→email), `ACCOUNT_MAP` (email→account_id),
 
 ## Security
 
-- **PKCE S256 required** on every authorization-code exchange.
+- **PKCE S256 required** on every authorization-code exchange (compare
+  `base64url(SHA256(code_verifier))` to the stored `code_challenge`).
 - `redirect_uri` validated against the allowlist at both `/authorize` and `/token`.
+- **Constant-time comparison** (`crypto/subtle.ConstantTimeCompare`) for the
+  `client_secret` (when configured) and the authorization code lookup, to avoid
+  timing oracles.
 - Access tokens short-lived (~1h) + refresh (~30d); `aud` = bridge URL, `iss` =
   `PUBLIC_BASE_URL`; reject tokens failing signature/exp/aud/iss.
-- Authorization codes single-use, ~60s TTL.
+- Authorization codes single-use (deleted on `take`), ~60s TTL.
+- **Refresh tokens are non-rotating** (HS256 JWT, no `jti`/denylist): a leaked
+  refresh token is valid until expiry. Accepted limitation for this small
+  static-client deployment; documented here so it's a known tradeoff, not a
+  surprise. Revocation = rotate `OAUTH_JWT_SECRET` (invalidates all tokens).
 - Personal codes are secrets — generate long random values; never log them.
-- **Remove all the temporary `🔍 / 🔑 / credentials:` debug logging** added during
-  the earlier debugging (it prints headers, tokens, and partial keys). Never log
-  `Authorization`, tokens, codes, or `code_verifier`.
+- **Remove ALL temporary debug logging** added during earlier debugging. Enumerated
+  (highest severity first — these print secrets):
+  - `internal/bridge/credentials.go:76` — `TOKEN_MAP loaded token=%q → email=%q`
+    (logs every personal code in plaintext at startup). **Must go.**
+  - `internal/bridge/credentials.go:84` — logs the looked-up code on every
+    `ResolveEmailFromToken` call (now the `/authorize` path). **Must go.**
+  - `internal/bridge/server.go:144` and `:207` — `log.Printf("…headers — %v", r.Header)` /
+    `headers=%v` (dump the full `Authorization` header = the JWT).
+  - `internal/bridge/server.go:86`, `:122`, `:178` — connect/`🔑`/`🔍` lines printing
+    email/accountID and a partial key (`key: %.8s…`).
+  - Never log `Authorization`, access/refresh tokens, authorization codes,
+    `code_verifier`, or personal codes anywhere.
 - HTTPS only in production (Railway terminates TLS).
 
 ## Error handling
@@ -227,9 +292,14 @@ Retained: `TOKEN_MAP` (codes→email), `ACCOUNT_MAP` (email→account_id),
 - `HandleAuthorize`: unknown code re-renders with error; bad redirect_uri → 400;
   valid code → 302 with `code`/`state`.
 
-`internal/bridge`: `resolveCaller` accepts a valid JWT → email; rejects
-missing/invalid with 401. Existing `credentials_test.go` unaffected (its
-`NewStore` signature is unchanged).
+`internal/bridge`:
+- `resolveCaller` accepts a valid JWT → email; rejects missing/empty/invalid with 401.
+- `resolveCaller` returns **403** when the JWT is valid but `ACCOUNT_MAP` has no
+  entry for the email (locks in the isolation-on-by-default invariant — a known
+  user must never get an unscoped session).
+- `credentials_test.go`: `TestResolve` rewritten for the 1-arg `Resolve(email)`
+  (shared-key fallback rows kept; bearer/legacy rows removed). `TestNewStore`
+  and the `ResolveEmailFromToken` tests are unchanged.
 
 ## File structure
 
@@ -239,8 +309,10 @@ missing/invalid with 401. Existing `credentials_test.go` unaffected (its
 | `internal/oauth/codes.go` | **New** — in-memory PKCE auth-code store |
 | `internal/oauth/server.go` | **New** — `/authorize` + `/token` handlers |
 | `internal/oauth/*_test.go` | **New** — table-driven tests |
-| `internal/bridge/server.go` | `resolveCaller` verifies JWT; `Server.tokens`; 401 challenge |
-| `main.go` | wire oauth routes + PRM; load new env; drop `BRIDGE_AUTH_TOKEN` |
+| `internal/bridge/server.go` | `resolveCaller` verifies JWT + 403-on-no-account; add `Server.tokens`, drop `Server.authToken` + `legacy`; new `NewServer` signature; 401 challenge; `extractBearer` drops `?api_key=` fallback |
+| `internal/bridge/credentials.go` | simplify `Resolve` to `Resolve(email string)`; remove `credentials.go:76`/`:84` debug logs |
+| `internal/bridge/credentials_test.go` | rewrite `TestResolve` for 1-arg signature |
+| `main.go` | wire oauth routes + PRM; load new env; `NewServer(baseURL, creds, tokens)`; drop `BRIDGE_AUTH_TOKEN` |
 | `go.mod` | add `github.com/golang-jwt/jwt/v5` |
 | `.env.example` | document new OAuth env vars; remove `BRIDGE_AUTH_TOKEN` |
 
