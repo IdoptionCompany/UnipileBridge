@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/idoption/unipileBridge/internal/mcp"
+	"github.com/idoption/unipileBridge/internal/oauth"
 	"github.com/idoption/unipileBridge/internal/unipile"
 )
 
@@ -26,46 +27,63 @@ type session struct {
 // Server is the MCP bridge server.
 type Server struct {
 	baseURL     string
+	publicURL   string
 	credentials *Store
-	authToken   string // BRIDGE_AUTH_TOKEN; "" => legacy mode (auth disabled)
+	tokens      *oauth.Issuer
 	mu          sync.RWMutex
 	sessions    map[string]*session
 }
 
-func NewServer(baseURL string, creds *Store, authToken string) *Server {
+func NewServer(baseURL, publicURL string, creds *Store, tokens *oauth.Issuer) *Server {
 	return &Server{
 		baseURL:     baseURL,
+		publicURL:   publicURL,
 		credentials: creds,
-		authToken:   authToken,
+		tokens:      tokens,
 		sessions:    make(map[string]*session),
 	}
 }
 
-// resolveCaller authenticates the request's bearer token and resolves the
-// caller's Unipile credentials. Identity comes from the bearer:
-//   - bearer == authToken  → shared token, no per-user identity (shared account)
-//   - bearer in TOKEN_MAP  → that user's email → per-user key + account_id
-//   - otherwise            → 401
-// On success status is 0; on failure it returns the HTTP status and JSON body
-// the handler should send.
+// resolveCaller verifies the bridge-issued JWT access token and resolves the
+// caller's Unipile credentials. status==0 on success; otherwise the HTTP status
+// + JSON body to send.
 func (s *Server) resolveCaller(r *http.Request) (apiKey, accountID, userEmail string, status int, errBody string) {
-	bearer := extractBearer(r)
-	legacy := s.authToken == ""
-	if !legacy {
-		if bearer == s.authToken {
-			// shared token — no per-user identity
-		} else if email := s.credentials.ResolveEmailFromToken(bearer); email != "" {
-			userEmail = email
-		} else {
-			return "", "", "", http.StatusUnauthorized, `{"error":"unauthorized"}`
-		}
-	}
-	key, err := s.credentials.Resolve(userEmail, bearer, legacy)
+	email, err := s.tokens.VerifyAccess(extractBearer(r))
 	if err != nil {
-		log.Printf("credential lookup failed for %q: %v", userEmail, err)
+		return "", "", "", http.StatusUnauthorized, `{"error":"unauthorized"}`
+	}
+	userEmail = email
+	accountID = s.credentials.ResolveAccountID(userEmail)
+	if accountID == "" {
+		// Verified user with no ACCOUNT_MAP entry — hard fail so isolation is never off.
+		return "", "", userEmail, http.StatusForbidden, `{"error":"no account mapped for user"}`
+	}
+	key, err := s.credentials.Resolve(userEmail)
+	if err != nil {
 		return "", "", userEmail, http.StatusForbidden, `{"error":"no Unipile credential for user"}`
 	}
-	return key, s.credentials.ResolveAccountID(userEmail), userEmail, 0, ""
+	return key, accountID, userEmail, 0, ""
+}
+
+// writeAuthError sends an error; on 401 it advertises the protected-resource
+// metadata so an MCP client knows where to start the OAuth flow.
+func (s *Server) writeAuthError(w http.ResponseWriter, status int, body string) {
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate",
+			`Bearer resource_metadata="`+s.publicURL+`/.well-known/oauth-protected-resource"`)
+	}
+	http.Error(w, body, status)
+}
+
+// HandleProtectedResourceMetadata serves RFC 9728 PRM pointing at this bridge as
+// its own authorization server.
+func (s *Server) HandleProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"resource":              s.publicURL + "/sse",
+		"authorization_servers": []string{s.publicURL},
+		"scopes_supported":      []string{"mcp"},
+	})
 }
 
 // ─── SSE endpoint (/sse) ─────────────────────────────────────────────────────
@@ -74,17 +92,14 @@ func (s *Server) resolveCaller(r *http.Request) (apiKey, accountID, userEmail st
 // JSON-RPC responses until the client disconnects.
 
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
-	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	apiKey, accountID, _, status, errBody := s.resolveCaller(r)
 	if status != 0 {
-		http.Error(w, errBody, status)
+		s.writeAuthError(w, status, errBody)
 		return
 	}
 
 	sessionID := uuid.NewString()
 	ch := make(chan mcp.Response, 32)
-
-	log.Printf("🔍 GET /sse — email=%q accountID=%q url=%q",
-		userEmail, accountID, r.URL.String())
 
 	s.mu.Lock()
 	s.sessions[sessionID] = &session{
@@ -119,8 +134,6 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", messagesURL)
 	flusher.Flush()
 
-	log.Printf("session %s connected (key: %.8s… email=%q accountID=%q)", sessionID, apiKey, userEmail, accountID)
-
 	// Stream responses until client disconnects
 	for {
 		select {
@@ -141,9 +154,6 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 // Dust POSTs JSON-RPC requests here. We route them and send responses via SSE.
 
 func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
-	log.Printf("🔍 /messages headers — %v", r.Header)
-	log.Printf("🔍 /messages url — %s", r.URL.String())
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -167,15 +177,14 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	// Re-resolve per-user credentials from this request's bearer token and swap
 	// the session's Unipile client before dispatch — Dust identifies the user via
 	// the per-request bearer token, not the /sse handshake.
-	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	apiKey, accountID, _, status, errBody := s.resolveCaller(r)
 	if status != 0 {
-		http.Error(w, errBody, status)
+		s.writeAuthError(w, status, errBody)
 		return
 	}
 	sess.mu.Lock()
 	sess.client = unipile.NewClient(s.baseURL, apiKey, accountID)
 	sess.mu.Unlock()
-	log.Printf("🔑 /messages session %s — method=%q email=%q accountID=%q", sessionID, req.Method, userEmail, accountID)
 
 	w.WriteHeader(http.StatusAccepted)
 
@@ -192,9 +201,9 @@ func (s *Server) HandleMessages(w http.ResponseWriter, r *http.Request) {
 // a one-shot SSE event or as plain JSON, depending on the Accept header.
 
 func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
-	apiKey, accountID, userEmail, status, errBody := s.resolveCaller(r)
+	apiKey, accountID, _, status, errBody := s.resolveCaller(r)
 	if status != 0 {
-		http.Error(w, errBody, status)
+		s.writeAuthError(w, status, errBody)
 		return
 	}
 
@@ -203,14 +212,6 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-
-	log.Printf("🔍 POST /sse — method=%q email=%q accountID=%q url=%q headers=%v",
-		req.Method,
-		userEmail,
-		accountID,
-		r.URL.String(),
-		r.Header,
-	)
 
 	// Notifications have no ID — return 202, no body (per MCP spec)
 	if req.ID == nil {
@@ -271,12 +272,7 @@ func (s *Server) handleRequest(sess *session, req mcp.Request) mcp.Response {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func extractBearer(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		// Also allow ?api_key=... for easier testing in browser
-		return r.URL.Query().Get("api_key")
-	}
-	return strings.TrimPrefix(auth, "Bearer ")
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
 func min(a, b int) int {

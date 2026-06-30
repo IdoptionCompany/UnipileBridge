@@ -17,38 +17,29 @@ func TestResolve(t *testing.T) {
 		name      string
 		email     string
 		sharedKey string
-		bearer    string
-		legacy    bool
 		wantKey   string
 		wantErr   bool
 	}{
-		{"map hit, no shared", "ian@company.com", "", "tok", false, "key_ian", false},
-		{"map beats shared", "ian@company.com", "shared", "tok", false, "key_ian", false},
-		{"unknown email uses shared", "bob@company.com", "shared", "tok", false, "shared", false},
-		{"unknown email no shared rejects", "bob@company.com", "", "tok", false, "", true},
-		{"no email uses shared", "", "shared", "tok", false, "shared", false},
-		{"no email auth mode rejects", "", "", "tok", false, "", true},
-		{"no email legacy bearer", "", "", "tok", true, "tok", false},
-		{"no email legacy shared beats bearer", "", "shared", "tok", true, "shared", false},
-		{"no email legacy empty bearer rejects", "", "", "", true, "", true},
-		{"email case and space insensitive", "  IAN@Company.com ", "", "tok", false, "key_ian", false},
-		{"named unknown rejected even legacy", "bob@company.com", "", "tok", true, "", true},
+		{"map hit", "ian@company.com", "", "key_ian", false},
+		{"map beats shared", "ian@company.com", "shared", "key_ian", false},
+		{"unknown email uses shared", "bob@company.com", "shared", "shared", false},
+		{"unknown email no shared rejects", "bob@company.com", "", "", true},
+		{"empty email uses shared", "", "shared", "shared", false},
+		{"empty email no shared rejects", "", "", "", true},
+		{"case/space insensitive", "  IAN@Company.com ", "", "key_ian", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(tc.sharedKey)
-			got, err := s.Resolve(tc.email, tc.bearer, tc.legacy)
+			got, err := s.Resolve(tc.email)
 			if tc.wantErr {
 				if !errors.Is(err, ErrNoCredential) {
 					t.Fatalf("want ErrNoCredential, got key=%q err=%v", got, err)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.wantKey {
-				t.Fatalf("want key %q, got %q", tc.wantKey, got)
+			if err != nil || got != tc.wantKey {
+				t.Fatalf("want %q, got %q (err=%v)", tc.wantKey, got, err)
 			}
 		})
 	}
