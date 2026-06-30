@@ -150,7 +150,7 @@ func (c *Client) SendInvitation(accountID, providerID, message string) (json.Raw
 	if message != "" {
 		body["message"] = message
 	}
-	return c.do("POST", "/api/v1/linkedin/invitations", nil, body)
+	return c.do("POST", "/api/v1/users/invite", nil, body)
 }
 
 // ─── Email ───────────────────────────────────────────────────────────────────
