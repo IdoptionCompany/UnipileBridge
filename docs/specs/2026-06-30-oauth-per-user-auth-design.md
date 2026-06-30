@@ -246,8 +246,13 @@ Retained: `TOKEN_MAP` (codes→email), `ACCOUNT_MAP` (email→account_id),
   `base64url(SHA256(code_verifier))` to the stored `code_challenge`).
 - `redirect_uri` validated against the allowlist at both `/authorize` and `/token`.
 - **Constant-time comparison** (`crypto/subtle.ConstantTimeCompare`) for the
-  `client_secret` (when configured) and the authorization code lookup, to avoid
-  timing oracles.
+  `client_secret` when configured. (Authorization codes are single-use,
+  high-entropy, ~60s TTL, so their `map` lookup needs no constant-time guarantee.)
+- **PKCE `S256` only** — `/authorize` rejects any `code_challenge_method` other
+  than `S256`, and `/token` only ever compares `base64url(SHA256(verifier))`. No
+  `plain` code path exists.
+- **`OAUTH_JWT_SECRET` is required and must be ≥32 bytes** — the server fails fast
+  at startup if it's unset or too short (avoids HS256 signed with a weak key).
 - Access tokens short-lived (~1h) + refresh (~30d); `aud` = bridge URL, `iss` =
   `PUBLIC_BASE_URL`; reject tokens failing signature/exp/aud/iss.
 - Authorization codes single-use (deleted on `take`), ~60s TTL.
