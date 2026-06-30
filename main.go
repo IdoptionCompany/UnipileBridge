@@ -7,6 +7,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/idoption/unipileBridge/internal/bridge"
+	"github.com/idoption/unipileBridge/internal/oauth"
 )
 
 func main() {
@@ -28,19 +29,46 @@ func main() {
 		port = "3000"
 	}
 
-	authToken := os.Getenv("BRIDGE_AUTH_TOKEN")
-	if authToken == "" {
-		log.Println("⚠️  WARNING: BRIDGE_AUTH_TOKEN not set — auth DISABLED (legacy mode)")
-	}
-
 	userMap := os.Getenv("USER_MAP")
 	sharedKey := os.Getenv("UNIPILE_SHARED_KEY")
 	accountMap := os.Getenv("ACCOUNT_MAP")
 	tokenMap := os.Getenv("TOKEN_MAP")
 	creds := bridge.NewStore(userMap, sharedKey, accountMap, tokenMap)
 
+	publicURL := os.Getenv("PUBLIC_BASE_URL")
+	if publicURL == "" {
+		log.Fatal("PUBLIC_BASE_URL is required (e.g. https://unipilebridge-production.up.railway.app)")
+	}
+	jwtSecret := os.Getenv("OAUTH_JWT_SECRET")
+	if len(jwtSecret) < 32 {
+		log.Fatal("OAUTH_JWT_SECRET is required and must be at least 32 bytes")
+	}
+	clientID := os.Getenv("OAUTH_CLIENT_ID")
+	if clientID == "" {
+		log.Fatal("OAUTH_CLIENT_ID is required")
+	}
+	redirectURI := os.Getenv("OAUTH_REDIRECT_URI")
+	if redirectURI == "" {
+		redirectURI = "https://dust.tt/oauth/mcp_static/finalize"
+	}
+	scope := os.Getenv("OAUTH_SCOPE")
+	if scope == "" {
+		scope = "mcp"
+	}
+
+	tokenIssuer := oauth.NewIssuer([]byte(jwtSecret), publicURL, publicURL+"/sse")
+	oauthSrv := oauth.NewServer(oauth.Config{
+		ClientID:     clientID,
+		ClientSecret: os.Getenv("OAUTH_CLIENT_SECRET"),
+		RedirectURI:  redirectURI,
+		Scope:        scope,
+	}, tokenIssuer, creds.ResolveEmailFromToken)
+
+	srv := bridge.NewServer(baseURL, publicURL, creds, tokenIssuer)
 	mux := http.NewServeMux()
-	srv := bridge.NewServer(baseURL, creds, authToken)
+	mux.HandleFunc("/oauth/authorize", oauthSrv.HandleAuthorize)
+	mux.HandleFunc("/oauth/token", oauthSrv.HandleToken)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", srv.HandleProtectedResourceMetadata)
 
 	// MCP /sse: GET = legacy SSE transport, POST = Streamable HTTP transport
 	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
