@@ -73,7 +73,6 @@ func parseTokenMap(raw string) map[string]string {
 		email := strings.TrimSpace(pair[idx+1:])
 		if token != "" && email != "" {
 			m[token] = email
-			log.Printf("credentials: TOKEN_MAP loaded token=%q → email=%q", token, email)
 		}
 	}
 	return m
@@ -81,7 +80,6 @@ func parseTokenMap(raw string) map[string]string {
 
 // ResolveEmailFromToken returns the email mapped to a per-user bearer token, or "".
 func (s *Store) ResolveEmailFromToken(token string) string {
-	log.Printf("credentials: looking up token=%q in %d entries", token, len(s.tokens))
 	if email, ok := s.tokens[token]; ok {
 		return email
 	}
@@ -97,22 +95,17 @@ func (s *Store) ResolveAccountID(email string) string {
 	return ""
 }
 
-func (s *Store) Resolve(email, bearer string, legacy bool) (string, error) {
+// Resolve returns the Unipile API key for a user's email: their USER_MAP key if
+// present, else the shared key, else ErrNoCredential.
+func (s *Store) Resolve(email string) (string, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email != "" {
 		if key, ok := s.users[email]; ok {
 			return key, nil
 		}
-		if s.sharedKey != "" {
-			return s.sharedKey, nil
-		}
-		return "", ErrNoCredential
 	}
 	if s.sharedKey != "" {
 		return s.sharedKey, nil
-	}
-	if legacy && bearer != "" {
-		return bearer, nil
 	}
 	return "", ErrNoCredential
 }
