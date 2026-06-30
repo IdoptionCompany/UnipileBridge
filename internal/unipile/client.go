@@ -74,6 +74,12 @@ func (c *Client) do(method, path string, query url.Values, body any) (json.RawMe
 // ─── Accounts ────────────────────────────────────────────────────────────────
 
 func (c *Client) ListAccounts() (json.RawMessage, error) {
+	// Scope to the session's own account so a user can't see other connected
+	// accounts (their ids/names). Sessions without an assigned account (shared
+	// token) still get the full list.
+	if c.DefaultAccountID != "" {
+		return c.do("GET", "/api/v1/accounts/"+c.DefaultAccountID, nil, nil)
+	}
 	return c.do("GET", "/api/v1/accounts", nil, nil)
 }
 
